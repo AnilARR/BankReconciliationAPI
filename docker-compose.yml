@@ -1,0 +1,39 @@
+# Local development stack: SQL Server 2022 + the API.
+# Values come from .env (copy .env.example). They are local placeholders, never real credentials.
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      RECON_DATABASE_URL: "mssql+pyodbc://sa:${MSSQL_SA_PASSWORD}@sqlserver:1433/BankRecon?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+      RECON_JWT_SECRET_KEY: ${RECON_JWT_SECRET_KEY:?set RECON_JWT_SECRET_KEY in .env}
+      RECON_ADMIN_USERNAME: ${RECON_ADMIN_USERNAME:-admin}
+      RECON_ADMIN_PASSWORD: ${RECON_ADMIN_PASSWORD:?set RECON_ADMIN_PASSWORD in .env}
+      RECON_LOG_JSON: "true"
+      RECON_ENVIRONMENT: ${RECON_ENVIRONMENT:-development}
+    ports:
+      - "8000:8000"
+
+volumes:
+  mssql-data:

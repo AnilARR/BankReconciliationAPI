@@ -1,0 +1,23 @@
+[project]
+name = "bank-reconciliation-api"
+version = "1.0.0"
+description = "Banking transaction reconciliation API (FastAPI + SQL Server)"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["B008"]  # FastAPI's File(...) / Depends(...) defaults
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*" = ["E501"]
+
+[tool.coverage.run]
+source = ["app"]

@@ -1,0 +1,75 @@
+stages:
+  - lint
+  - test
+  - build
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+default:
+  image: python:3.12-slim-bookworm
+  cache:
+    key:
+      files: [requirements.txt, requirements-dev.txt]
+    paths: [.cache/pip]
+
+lint:
+  stage: lint
+  script:
+    - pip install ruff==0.17.1
+    - ruff check .
+    - ruff format --check .
+
+unit-tests:
+  stage: test
+  script:
+    - pip install -r requirements-dev.txt
+    - pytest --junitxml=report.xml --cov --cov-report=term --cov-report=xml
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+# Runs the same suite and the Alembic migration against a real SQL Server.
+sqlserver-integration:
+  stage: test
+  services:
+    - name: mcr.microsoft.com/mssql/server:2022-latest
+      alias: sqlserver
+      variables:
+        ACCEPT_EULA: "Y"
+        MSSQL_SA_PASSWORD: "CiOnly_Pa55word!"
+  variables:
+    ACCEPT_EULA: "Y"
+    RECON_DATABASE_URL: "mssql+pyodbc://sa:CiOnly_Pa55word!@sqlserver:1433/BankReconTest?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+    TEST_DATABASE_URL: $RECON_DATABASE_URL
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl gnupg unixodbc
+    - curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+    - echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list
+    - apt-get update && apt-get install -y --no-install-recommends msodbcsql18
+    - pip install -r requirements-dev.txt
+  script:
+    - python scripts/create_database.py
+    - alembic upgrade head
+    - alembic downgrade base
+    - pytest -q
+
+docker-image:
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build --target runtime -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
