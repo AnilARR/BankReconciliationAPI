@@ -6,6 +6,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
 
@@ -14,7 +15,7 @@ from app.config import DEFAULT_JWT_SECRET, get_settings
 from app.database import SessionLocal, engine
 from app.logging_config import configure_logging, request_id_var
 from app.models import User, UserRole
-from app.routers import auth, imports, reconciliation, transactions
+from app.routers import auth, dashboard, imports, reconciliation, transactions
 from app.security import hash_password
 
 logger = logging.getLogger("app")
@@ -42,6 +43,7 @@ TAGS = [
     {"name": "Transactions", "description": "Ledger transactions: create, retrieve, update, search, bulk load."},
     {"name": "Daily file imports", "description": "Upload and inspect daily bank files."},
     {"name": "Reconciliation", "description": "Compare imported files with the ledger and produce reports."},
+    {"name": "Dashboard", "description": "Aggregated figures for the dashboard home page."},
     {"name": "Health", "description": "Liveness / readiness."},
 ]
 
@@ -113,7 +115,16 @@ def create_app() -> FastAPI:
         request_id_var.reset(token)
         return response
 
-    for router in (auth.router, transactions.router, imports.router, reconciliation.router):
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["Content-Disposition", "X-Request-ID"],
+        )
+
+    for router in (auth.router, transactions.router, imports.router, reconciliation.router, dashboard.router):
         app.include_router(router, prefix=API_PREFIX)
 
     @app.get("/health", tags=["Health"], summary="Liveness and database connectivity")

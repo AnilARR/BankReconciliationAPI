@@ -45,3 +45,8 @@ def create_user(payload: UserCreate, admin: AdminUser, db: Annotated[Session, De
     db.refresh(user)
     logger.info("Admin %s created user %s with role %s", admin.username, user.username, user.role)
     return user
+
+
+@router.get("/users", response_model=list[UserRead], summary="List users (admin)")
+def list_users(admin: AdminUser, db: Annotated[Session, Depends(get_db)]) -> list[User]:
+    return list(db.scalars(select(User).order_by(User.username)))

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False
 
+    # Browser origins allowed to call the API directly, e.g. ["http://localhost:5173"].
+    # Not needed when the frontend is served behind the same origin (nginx / Vite proxy).
+    cors_origins: list[str] = []
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024

@@ -92,12 +92,15 @@ def list_items(
     user: CurrentUser,
     db: DbSession,
     category: ReconciliationCategory | None = None,
+    exceptions_only: Annotated[bool, Query(description="Only non-matched items")] = False,
     reference: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
     _get_run_or_404(db, run_id)
     filters = [ReconciliationItem.run_id == run_id]
+    if exceptions_only:
+        filters.append(ReconciliationItem.category.in_(UNMATCHED_CATEGORIES))
     if category:
         filters.append(ReconciliationItem.category == category.value)
     if reference:

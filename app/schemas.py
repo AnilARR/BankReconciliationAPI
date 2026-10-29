@@ -253,3 +253,20 @@ class UserRead(BaseModel):
     role: UserRole
     is_active: bool
     created_at: datetime
+
+
+class StatusTotal(BaseModel):
+    status: str
+    count: int
+    amount: Decimal = Field(examples=["1250.75"])
+
+
+class DashboardSummary(BaseModel):
+    transaction_count: int
+    transaction_volume: Decimal = Field(examples=["1250.75"])
+    transactions_by_status: list[StatusTotal]
+    import_count: int
+    run_count: int
+    latest_run: ReconciliationRunRead | None
+    recent_runs: list[ReconciliationRunRead]
+    recent_imports: list[ImportBatchRead]

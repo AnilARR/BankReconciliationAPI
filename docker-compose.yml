@@ -1,4 +1,4 @@
-# Local development stack: SQL Server 2022 + the API.
+# Local development stack: SQL Server 2022 + the API + the React dashboard (http://localhost:3000).
 # Values come from .env (copy .env.example). They are local placeholders, never real credentials.
 services:
   sqlserver:
@@ -34,6 +34,14 @@ services:
       RECON_ENVIRONMENT: ${RECON_ENVIRONMENT:-development}
     ports:
       - "8000:8000"
+
+  web:
+    build:
+      context: ./frontend
+    depends_on:
+      - api
+    ports:
+      - "3000:8080"
 
 volumes:
   mssql-data:

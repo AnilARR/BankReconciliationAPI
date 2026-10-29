@@ -127,6 +127,11 @@ def test_end_to_end_reconciliation(client, analyst_headers, viewer_headers):
     fields = {i["reference"]: i["mismatched_fields"] for i in items}
     assert fields == {"TXN-002": "amount", "TXN-003": "status", "TXN-004": "transaction_date"}
 
+    exceptions = client.get(
+        f"/api/v1/reconciliations/{run['id']}/items", params={"exceptions_only": True}, headers=viewer_headers
+    ).json()
+    assert exceptions["total"] == 6 and all(i["category"] != "MATCHED" for i in exceptions["items"])
+
     report = client.get(f"/api/v1/reconciliations/{run['id']}/report", headers=viewer_headers).json()
     assert {i["category"] for i in report["items"]} == {
         "MISMATCHED",

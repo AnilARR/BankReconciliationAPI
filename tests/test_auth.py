@@ -34,3 +34,11 @@ def test_admin_creates_user(client, admin_headers):
 def test_non_admin_cannot_create_user(client, analyst_headers):
     payload = {"username": "someone", "password": "long-enough-pw"}
     assert client.post("/api/v1/auth/users", json=payload, headers=analyst_headers).status_code == 403
+
+
+def test_admin_lists_users(client, admin_headers, viewer_headers):
+    response = client.get("/api/v1/auth/users", headers=admin_headers)
+    assert response.status_code == 200
+    assert {"admin", "analyst", "viewer"} <= {u["username"] for u in response.json()}
+    assert "hashed_password" not in response.json()[0]
+    assert client.get("/api/v1/auth/users", headers=viewer_headers).status_code == 403

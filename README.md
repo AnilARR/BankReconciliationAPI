@@ -1,14 +1,17 @@
 # Banking Transaction Reconciliation API
 
 A bank receives a **daily transaction file**. This service imports the file (CSV or Excel), compares every record
-with the transactions stored in **SQL Server**, and reports missing, mismatched and duplicate payments.
+with the transactions stored in **SQL Server**, and reports missing, mismatched and duplicate payments. A **React
+dashboard** (`frontend/`) puts the whole workflow in the browser.
 
-Built with **FastAPI · Pydantic · SQLAlchemy · SQL Server · Alembic · pandas · pytest · Docker · GitLab CI**.
+**Backend:** FastAPI · Pydantic · SQLAlchemy · SQL Server · Alembic · pandas · pytest
+**Frontend:** React 19 · TypeScript · Vite · React Router · Recharts · Vitest
+**Delivery:** Docker · Docker Compose · nginx · GitLab CI
 
 > ⚠️ Learning project: use **synthetic data only**. Never load real customer records or banking credentials.
 > All sample data in this repo is generated (`Synthetic Customer NNN`, fake `SYNT` bank code).
 
-![Swagger UI](docs/screenshots/01-swagger-overview.png)
+![Dashboard](docs/screenshots/frontend/02-dashboard.png)
 
 ---
 
@@ -22,7 +25,8 @@ Built with **FastAPI · Pydantic · SQLAlchemy · SQL Server · Alembic · panda
 | 4 | Detect duplicate transaction references | In-file duplicates on upload, `GET /imports/{id}/duplicates`, unique ledger reference (409 on conflict) |
 | 5 | Compare amounts, dates, references, statuses | `app/services/reconciliation.py` (+ currency, account number, configurable tolerances) |
 | 6 | Unmatched-transaction reports | `GET /reconciliations/{id}/report?format=json\|csv\|xlsx` |
-| 7 | Logging, tests, authentication, API docs | Request-ID logging (text/JSON), 48 pytest tests (95% coverage), JWT + roles, Swagger/ReDoc |
+| 7 | Logging, tests, authentication, API docs | Request-ID logging (text/JSON), 54 pytest + 16 Vitest tests, JWT + roles, Swagger/ReDoc |
+| + | Web dashboard | `frontend/` — React app for uploads, reconciliation review, search and reports ([details](frontend/README.md)) |
 
 ### Reconciliation rules
 
@@ -57,9 +61,54 @@ stored.
 
 ---
 
-## Screenshots
+## Screenshots — React dashboard
 
-All taken from a local run against the synthetic sample data (200 ledger rows, 204-row bank file).
+Captured from the production build talking to the real API, with three days of synthetic data. The day-21 file
+was uploaded and reconciled through the UI.
+
+**Sign in**
+
+![Login](docs/screenshots/frontend/01-login.png)
+
+**Upload the daily file** — validation summary, duplicate references, reconcile with optional tolerances/period
+
+![Daily import](docs/screenshots/frontend/03-daily-import-upload.png)
+
+**Reconciliation run** — category cards, donut, exceptions with file-vs-ledger values; differing fields highlighted
+
+![Run](docs/screenshots/frontend/04-reconciliation-run.png)
+
+**Filtered to mismatches**
+
+![Mismatched](docs/screenshots/frontend/05-reconciliation-mismatched.png)
+
+**Transactions** — search, sort, page; create and edit
+
+![Transactions](docs/screenshots/frontend/06-transactions-search.png)
+
+![Edit](docs/screenshots/frontend/07-edit-transaction.png)
+
+**Import batch detail and duplicate references**
+
+![Batch](docs/screenshots/frontend/08-import-batch-detail.png)
+
+**Reconciliation history**
+
+![History](docs/screenshots/frontend/09-reconciliation-history.png)
+
+**User management (admin only)**
+
+![Users](docs/screenshots/frontend/10-user-management.png)
+
+**Responsive layout**
+
+<img src="docs/screenshots/frontend/11-mobile-dashboard.png" width="320" alt="Mobile dashboard">
+
+## Screenshots — API (Swagger UI)
+
+Taken from a local run against the synthetic sample data (200 ledger rows, 204-row bank file).
+
+![Swagger UI](docs/screenshots/01-swagger-overview.png)
 
 **Log in via the Authorize button (OAuth2 password flow → JWT)**
 
@@ -97,15 +146,17 @@ All taken from a local run against the synthetic sample data (200 ledger rows, 2
 
 ## Quick start
 
-### Option A — Docker Compose (SQL Server 2022 + API)
+### Option A — Docker Compose (SQL Server 2022 + API + dashboard)
 
 ```bash
 cp .env.example .env          # edit the placeholder passwords / secret
 docker compose up --build
 ```
 
-The API container creates the `BankRecon` database, runs `alembic upgrade head`, creates the bootstrap admin and
-serves on <http://localhost:8000/docs>.
+The API container creates the `BankRecon` database, runs `alembic upgrade head` and creates the bootstrap admin.
+
+* Dashboard: <http://localhost:3000> (sign in with `RECON_ADMIN_USERNAME` / `RECON_ADMIN_PASSWORD`)
+* API docs: <http://localhost:8000/docs>
 
 ### Option B — Local Python (SQLite, no SQL Server needed)
 
@@ -115,6 +166,9 @@ pip install -r requirements-dev.txt
 export RECON_ADMIN_USERNAME=admin RECON_ADMIN_PASSWORD='ChangeMe-LocalAdmin-1'
 alembic upgrade head
 uvicorn app.main:app --reload
+
+# in a second terminal
+cd frontend && npm install && npm run dev      # http://localhost:5173 (proxies /api to :8000)
 ```
 
 To use a local SQL Server instead, set `RECON_DATABASE_URL` (see `.env.example`) and install the
@@ -152,7 +206,7 @@ Interactive docs: **`/docs`** (Swagger UI) and **`/redoc`**. All endpoints are u
 |---|---|---|
 | POST | `/auth/token` | Log in, returns JWT |
 | GET | `/auth/me` | Current user |
-| POST | `/auth/users` | Create user (admin) |
+| GET / POST | `/auth/users` | List / create users (admin) |
 | POST | `/transactions` | Create ledger transaction (409 on duplicate reference) |
 | GET | `/transactions` | Search: `reference`, `account_number`, `customer_name`, `status`, `currency`, `min_amount`, `max_amount`, `date_from`, `date_to`, `sort_by`, `sort_order`, `limit`, `offset` |
 | GET | `/transactions/{id}` · `/transactions/by-reference/{ref}` | Retrieve |
@@ -161,8 +215,9 @@ Interactive docs: **`/docs`** (Swagger UI) and **`/redoc`**. All endpoints are u
 | POST | `/imports` | Upload daily bank file |
 | GET | `/imports` · `/imports/{id}` · `/imports/{id}/records` · `/imports/{id}/duplicates` | Inspect batches |
 | POST | `/reconciliations` | Reconcile a batch (`batch_id`, optional tolerances / period) |
-| GET | `/reconciliations` · `/reconciliations/{id}` · `/reconciliations/{id}/items` | Runs and items (filter by `category`) |
+| GET | `/reconciliations` · `/reconciliations/{id}` · `/reconciliations/{id}/items` | Runs and items (filter by `category`, `exceptions_only`, `reference`) |
 | GET | `/reconciliations/{id}/report` | Unmatched report, `format=json\|csv\|xlsx`, `include_matched` |
+| GET | `/dashboard/summary` | Ledger totals by status, import/run counts, latest and recent runs, recent imports |
 | GET | `/health` | Liveness + DB check (outside `/api/v1`, no auth) |
 
 ---
@@ -184,9 +239,10 @@ alembic/                Migrations
 scripts/                Synthetic data generator, DB bootstrap, container entrypoint
 tests/                  Unit + API tests
 sample_data/            Generated synthetic files
+frontend/               React + TypeScript dashboard (Vite), nginx Dockerfile — see frontend/README.md
 Dockerfile              Multi-stage (test / runtime) with ODBC Driver 18
-docker-compose.yml      SQL Server 2022 + API
-.gitlab-ci.yml          lint → test (SQLite + real SQL Server service) → build & push image
+docker-compose.yml      SQL Server 2022 + API + dashboard
+.gitlab-ci.yml          lint → test (SQLite, real SQL Server, frontend) → build & push both images
 ```
 
 ## Configuration
@@ -200,12 +256,14 @@ docker-compose.yml      SQL Server 2022 + API
 | `RECON_AMOUNT_TOLERANCE` / `RECON_DATE_TOLERANCE_DAYS` | `0.00` / `0` | Default reconciliation tolerances |
 | `RECON_MAX_UPLOAD_SIZE_MB` | `10` | Larger uploads get HTTP 413 |
 | `RECON_LOG_LEVEL` / `RECON_LOG_JSON` | `INFO` / `false` | JSON logs suit container log shippers |
+| `RECON_CORS_ORIGINS` | `[]` | JSON list of browser origins; only needed if the dashboard is hosted on another origin |
 
 ## Testing
 
 ```bash
 pytest --cov                    # SQLite in-memory, ~2 s
 ruff check . && ruff format --check .
+cd frontend && npm run typecheck && npm test     # 16 Vitest tests
 TEST_DATABASE_URL='mssql+pyodbc://…/BankReconTest?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes' pytest
 ```
 
