@@ -278,3 +278,197 @@ upgrade → `alembic check` → downgrade round trip that fails if models and mi
 * Paging always has a deterministic `ORDER BY` (required by `OFFSET … FETCH`).
 * Reconciliation items store snapshots + plain ids rather than FKs to avoid SQL Server's
   "multiple cascade paths" restriction and to keep historical reports stable when the ledger changes.
+
+---
+
+## Architecture & Design
+
+### 1. Overall architecture — 3-tier
+
+The system is split into three independent tiers. Each tier only talks to the one next to it.
+
+```
+┌──────────────────────┐   HTTPS / JSON + JWT   ┌──────────────────────┐   SQL (SQLAlchemy)   ┌──────────────────┐
+│   React Dashboard    │ ─────────────────────▶ │   FastAPI Backend    │ ───────────────────▶ │    SQL Server    │
+│ (Presentation tier)  │ ◀───────────────────── │  (Application tier)  │ ◀─────────────────── │   (Data tier)    │
+└──────────────────────┘                        └──────────────────────┘                      └──────────────────┘
+      served by nginx                                run by uvicorn                         schema via Alembic
+```
+
+| Tier | Technology | Responsibility |
+|---|---|---|
+| Presentation | React + TypeScript | Show data, collect user input |
+| Application | FastAPI | All business rules: validation, matching, security, reports |
+| Data | SQL Server | Store transactions, imports and reconciliation results |
+
+Each tier can be changed, tested and deployed separately — e.g. a mobile app could replace the dashboard without
+touching the backend.
+
+### 2. Backend — layered architecture
+
+```
+Request ──▶ Routers ──▶ Schemas (Pydantic) ──▶ Services ──▶ Models (SQLAlchemy) ──▶ SQL Server
+            (API)       (validation / DTOs)    (business     (ORM mapping)
+                                                logic)
+```
+
+| Layer | Location | Responsibility |
+|---|---|---|
+| Routers (controllers) | `app/routers/` | Receive HTTP requests, check permissions, call services, return responses |
+| Schemas (DTOs) | `app/schemas.py` | Validate input and shape output |
+| Services | `app/services/` | File import, reconciliation matching, report generation |
+| Models | `app/models.py` | Database tables as Python classes |
+| Infrastructure | `config.py`, `database.py`, `security.py`, `logging_config.py` | Settings, DB sessions, JWT/passwords, logging |
+
+Business logic does not depend on HTTP, so it is unit tested without starting a server (separation of concerns).
+
+**Design patterns**
+
+| Pattern | Where | Why |
+|---|---|---|
+| Dependency Injection | `Depends(get_db)`, `Depends(get_current_user)` | One DB session and user per request; easy to replace in tests |
+| DTO | Pydantic `TransactionCreate`, `TransactionRead`, … | Database models are never exposed directly; all input is validated |
+| Service layer | `importer.py`, `reconciliation.py`, `reports.py` | Thin routers, reusable logic |
+| Pure-function core | `reconcile_records()` | Matching needs no database, so it is simple to unit test |
+| Factory | `create_app()`, `build_engine()` | Build the app/engine from settings (SQLite for tests, SQL Server for production) |
+| Configurable strategy | `ReconciliationConfig` | Amount/date tolerances change per run without code changes |
+| RBAC | `require_roles()` dependency | Viewer / Analyst / Admin permissions |
+| Middleware | Request logging with request ID | Every log line can be traced to one request |
+
+### 3. Database design
+
+```
+users                          transactions   (ledger — "database side")
+─────                          ────────────
+id                             id
+username (unique)              reference (unique, indexed)
+hashed_password                account_number, customer_name
+role, is_active                amount DECIMAL(18,2), currency
+                               transaction_date, status, created_at, updated_at
+
+import_batches   (one uploaded file)
+──────────────
+id, filename, file_type, uploaded_by, total_rows, valid_rows, invalid_rows, duplicate_rows
+   │ 1
+   ├──── N ──▶ statement_records       (rows from the file — "file side")
+   │           batch_id (FK), row_number, reference, amount, transaction_date, status, is_duplicate
+   │
+   └──── N ──▶ reconciliation_runs     (one comparison)
+               batch_id (FK), run_by, tolerances, period, matched, mismatched,
+               missing_in_database, missing_in_file, duplicates_in_file
+                  │ 1
+                  └──── N ──▶ reconciliation_items   (one result row)
+                              category, reference, file_amount, db_amount, file_date, db_date,
+                              file_status, db_status, mismatched_fields, details
+```
+
+Key decisions:
+
+1. **`DECIMAL(18,2)` for money** — never floating point, which causes rounding errors.
+2. **`NVARCHAR` for names** — supports any language.
+3. **Unique index on `transactions.reference`** — the database itself blocks duplicate references.
+4. **Indexes** on reference, date, status and account number for fast search.
+5. **Snapshots in `reconciliation_items`** — values are copied instead of linked, so old reports stay correct after
+   the ledger changes (audit trail), and SQL Server's "multiple cascade paths" restriction is avoided.
+6. **Audit trail** — every import and run records who did it and when.
+
+### 4. Database migrations (Alembic)
+
+The schema is version-controlled with Alembic instead of being created by hand.
+
+* `alembic/versions/0001_initial_schema.py` creates all tables and indexes.
+* `alembic upgrade head` applies migrations; `alembic downgrade base` rolls them back.
+* Future schema changes are added as new migration files (`0002_…`), never as manual database edits.
+* A test runs upgrade → `alembic check` → downgrade and fails if models and migrations drift apart.
+* The API container applies migrations automatically on startup.
+
+### 5. Business flow
+
+```
+1. IMPORT              2. VALIDATE                        3. STORE
+Bank CSV / Excel ──▶   pandas reads the file         ──▶  valid rows    → statement_records
+                       • map column names                 invalid rows  → reported with row number
+                       • clean amounts and dates          duplicates    → flagged
+                       • Pydantic validates each row
+
+4. RECONCILE                                              5. REPORT
+For each file record (matched by reference):              Saved as a run + items, exported as
+  • not in ledger        → MISSING_IN_DATABASE       ──▶    • JSON  (API / dashboard)
+  • repeated in file     → DUPLICATE_IN_FILE                • CSV
+  • any field differs    → MISMATCHED                       • Excel (summary + details sheets)
+  • everything agrees    → MATCHED
+For each ledger transaction in the period:
+  • not in file          → MISSING_IN_FILE
+```
+
+Matching rules: references are trimmed and upper-cased; amount, date, status, currency and account number are
+compared; amount and date tolerances are configurable; for a repeated reference the first occurrence is reconciled
+and the repeats are flagged.
+
+### 6. Security design
+
+| Area | Design |
+|---|---|
+| Authentication | JWT (OAuth2 password flow), tokens expire after 60 minutes |
+| Passwords | PBKDF2-SHA256 with a random salt — plain passwords are never stored |
+| Authorization | RBAC: viewer (read only), analyst (import, reconcile, edit), admin (+ users) |
+| Input validation | Every request and every file row is validated by Pydantic |
+| Upload safety | File type check (.csv / .xlsx) and 10 MB size limit |
+| Secrets | Environment variables; startup fails in production with the default secret |
+| Data | Synthetic data only — no real customer records |
+
+### 7. Frontend design (React)
+
+```
+src/
+  api/          client.ts (HTTP + token + errors), endpoints.ts, types.ts
+  auth/         AuthContext (login state, roles)
+  components/   Layout, cards, badges, modal, dropzone, charts
+  pages/        one component per screen
+  utils/        formatting, colours, useAsync hook
+```
+
+| Pattern | Where | Why |
+|---|---|---|
+| API client layer | `api/client.ts` | One place for HTTP: adds the JWT and handles errors consistently |
+| Context API | `AuthContext` | Logged-in user and role available on every page |
+| Custom hook | `useAsync` | Reusable loading / error / data handling |
+| Protected routes | `RequireAuth`, `AdminOnly` | Block pages without login or the right role |
+| Reusable components | `components/ui.tsx` | Consistent cards, tables and badges |
+| Code splitting | `React.lazy` in `App.tsx` | Charts load only on pages that need them |
+| Typed API contract | `api/types.ts` | TypeScript catches mistakes in API data |
+| Auto logout | 401 handler | Expired sessions return to the login page |
+
+### 8. Deployment design
+
+```
+                              docker compose up
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  web (nginx :3000) ──/api──▶ api (FastAPI :8000) ──▶ sqlserver (:1433)        │
+│  serves React build          runs migrations         SQL Server 2022          │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+* nginx serves the dashboard and forwards `/api` to the backend — same origin, so no CORS setup is needed.
+* Multi-stage Dockerfiles keep build tools out of the final images.
+* GitLab CI/CD: **lint → tests (backend, SQL Server, frontend) → build & push Docker images**.
+
+### 9. Testing design
+
+| Level | What is tested | Tool |
+|---|---|---|
+| Unit | File parsing, amount/date cleaning, matching logic, tolerances | pytest |
+| API / integration | Every endpoint, roles, error cases, report downloads | pytest + TestClient |
+| Database | Migrations match the models | pytest + Alembic |
+| Frontend | Login, upload, filters, roles, error messages | Vitest + Testing Library |
+
+**54 backend tests and 16 frontend tests.**
+
+### 10. Summary
+
+A **3-tier architecture** (React → FastAPI → SQL Server). The backend follows a **layered design** — routers,
+Pydantic schemas, a service layer and SQLAlchemy models — with **dependency injection** for database sessions and
+authentication. The schema is versioned with **Alembic migrations**. The reconciliation engine is a **pure
+function** that matches records by reference and classifies each as matched, mismatched, missing or duplicate.
+Security uses **JWT with role-based access control**, and everything is containerised with **Docker** and
+verified in a **GitLab CI/CD** pipeline.
